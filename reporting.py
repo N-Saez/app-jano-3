@@ -12,7 +12,7 @@ Reportes de recursos:
 import numpy as np
 import pandas as pd
 
-from classification import CATEGORIES, classify_resources
+from classification import CATEGORIES
 
 
 def block_tonnage(block_size, espesor, densidad):
@@ -22,15 +22,20 @@ def block_tonnage(block_size, espesor, densidad):
 
 
 def report_resources_by_category(scenario_name, mask, categories, est,
-                                 block_size, espesor, densidad):
+                                 block_size, espesor, densidad,
+                                 cutoff_grade=0.0):
     """Tabla de recursos por categoría para un escenario.
 
-    mask       : bloques dentro de la interpretación mineralizada
-    categories : categoría por bloque (todos los bloques)
-    est        : ley estimada por bloque (Cu%)
+    mask         : bloques dentro de la interpretación mineralizada
+    categories   : categoría por bloque (todos los bloques)
+    est          : ley estimada por bloque (Cu%)
+    cutoff_grade : ley de corte (%CuT) — sólo se reportan bloques con
+                   ley estimada >= corte
     """
     ton_b = block_tonnage(block_size, espesor, densidad)
     area_b = block_size * block_size
+    # Aplicar la ley de corte sobre la estimación
+    mask = mask & np.isfinite(est) & (est >= cutoff_grade)
     rows = []
     for cat in CATEGORIES + ["Total recurso"]:
         if cat == "Total recurso":
@@ -67,64 +72,51 @@ def report_resources_by_category(scenario_name, mask, categories, est,
     return pd.DataFrame(rows)
 
 
-def report_total_by_scenario(scenarios, dist, d_med, d_ind, d_inf,
-                             block_size, espesor, densidad):
+def report_total_by_scenario(scenarios, block_size, espesor, densidad,
+                             cutoff_grade=0.0):
     """Tabla resumen con una fila por escenario guardado.
 
     Cada escenario usa SU PROPIA estimación (sc["est_result"]): la
     estimación cambia entre escenarios porque cambia el dominio.
-    Los escenarios sin estimación se omiten.
+    Los escenarios sin estimación se omiten. Sólo se contabilizan los
+    bloques con ley estimada >= cutoff_grade (%CuT).
+
+    Unidades: tonelaje en Mt (millones de t), metal en kt (miles de t).
     """
     ton_b = block_tonnage(block_size, espesor, densidad)
-    area_b = block_size * block_size
     rows = []
     for sc in scenarios:
         if sc.get("est_result") is None:
             continue   # aún no estimado
         est = sc["est_result"]["est"]
-        mask = sc["mask"]
+        # Interpretación + ley de corte sobre la estimación
+        mask = sc["mask"] & np.isfinite(est) & (est >= cutoff_grade)
         n = int(mask.sum())
-        cat = classify_resources(dist, mask, d_med, d_ind, d_inf)
         if n == 0:
-            rows.append({"Escenario": sc["name"], "Área m²": 0.0,
-                         "Toneladas": 0.0, "Ley media Cu%": np.nan,
-                         "Metal Cu (t)": 0.0, "% Medido": 0.0,
-                         "% Indicado": 0.0, "% Inferido": 0.0,
-                         "% No clasificado": 0.0})
+            rows.append({"Escenario": sc["name"], "Ton (Mt)": 0.0,
+                         "Ley media Cu%": np.nan, "Metal Cu (kt)": 0.0})
             continue
         leyes = est[mask]
-        finitas = np.isfinite(leyes)
         metal = float(np.nansum(ton_b * leyes / 100.0))
-
-        def pct(c):
-            # porcentaje del tonelaje del escenario en la categoría c
-            return 100.0 * (mask & (cat == c)).sum() / n
-
         rows.append({
             "Escenario": sc["name"],
-            "Área m²": n * area_b,
-            "Toneladas": n * ton_b,
-            "Ley media Cu%": (float(np.nanmean(leyes)) if finitas.any()
-                              else np.nan),
-            "Metal Cu (t)": metal,
-            "% Medido": pct("Medido"),
-            "% Indicado": pct("Indicado"),
-            "% Inferido": pct("Inferido"),
-            "% No clasificado": pct("No clasificado"),
+            "Ton (Mt)": n * ton_b / 1e6,
+            "Ley media Cu%": float(np.nanmean(leyes)),
+            "Metal Cu (kt)": metal / 1e3,
         })
     return pd.DataFrame(rows)
 
 
 def scenario_percentiles(totals):
-    """Estadísticas entre escenarios para toneladas, ley y metal.
+    """Estadísticas entre escenarios para tonelaje (Mt), ley y metal (kt).
 
     I90_abs = P95 - P5
     I90_rel = 50 * (P95 - P5) / P50   [%]
     """
     rows = []
-    variables = [("Toneladas", "Toneladas"),
+    variables = [("Ton (Mt)", "Ton (Mt)"),
                  ("Ley Cu %", "Ley media Cu%"),
-                 ("Metal Cu t", "Metal Cu (t)")]
+                 ("Metal Cu (kt)", "Metal Cu (kt)")]
     for label, col in variables:
         vals = totals[col].dropna().to_numpy()
         if len(vals) == 0:
@@ -134,6 +126,47 @@ def scenario_percentiles(totals):
         i90rel = 50.0 * i90 / p50 if p50 > 0 else np.nan
         rows.append({"Variable": label, "P5": p5, "P50": p50, "P95": p95,
                      "I90 abs": i90, "I90 rel %": i90rel})
+    return pd.DataFrame(rows)
+
+
+def compare_tonnage_with_truth(scenarios, cu_true, block_size, espesor,
+                               densidad, cutoff_grade=0.2):
+    """Tabla escenario vs realidad sobre una ley de corte (%CuT):
+
+    Por escenario: Ton / Ley / Metal estimados (bloques dentro de la
+    interpretación con ley estimada >= corte) versus Ton / Ley / Metal
+    REALES (bloques con ley verdadera >= corte), y la diferencia
+    porcentual de cada variable: 100*(estimado - real)/real.
+    """
+    ton_b = block_tonnage(block_size, espesor, densidad)
+
+    # Recurso REAL sobre la ley de corte (igual para todos los escenarios)
+    sel_r = cu_true >= cutoff_grade
+    ton_r = sel_r.sum() * ton_b
+    ley_r = float(cu_true[sel_r].mean()) if sel_r.any() else np.nan
+    met_r = float(np.sum(ton_b * cu_true[sel_r] / 100.0))
+
+    rows = []
+    for sc in scenarios:
+        if sc.get("est_result") is None:
+            continue
+        est = sc["est_result"]["est"]
+        sel = sc["mask"] & np.isfinite(est) & (est >= cutoff_grade)
+        ton = sel.sum() * ton_b
+        ley = float(est[sel].mean()) if sel.any() else np.nan
+        met = float(np.sum(ton_b * est[sel] / 100.0))
+        rows.append({
+            "Escenario": sc["name"],
+            "Ton (Mt)": ton / 1e6,
+            "Ley Cu%": ley,
+            "Metal Cu (t)": met,
+            "Ton real (Mt)": ton_r / 1e6,
+            "Ley real Cu%": ley_r,
+            "Metal real (t)": met_r,
+            "Δ% Ton": 100.0 * (ton - ton_r) / ton_r if ton_r else np.nan,
+            "Δ% Ley": 100.0 * (ley - ley_r) / ley_r if ley_r else np.nan,
+            "Δ% Metal": 100.0 * (met - met_r) / met_r if met_r else np.nan,
+        })
     return pd.DataFrame(rows)
 
 
@@ -162,49 +195,3 @@ def compare_with_truth(scenarios, truth_mask, block_size):
             "Falso negativo m²": fn * area_b,
         })
     return pd.DataFrame(rows)
-
-
-def auto_comments(perc, totals, meta=5):
-    """Comentarios automáticos simples para guiar la interpretación
-    (heurísticas docentes, no juicio experto).
-
-    meta : número objetivo de escenarios que debe dibujar el estudiante.
-    """
-    out = []
-    if perc.empty or len(totals) < 2:
-        return ["Guarde al menos 2 escenarios para generar comentarios."]
-
-    def rel(var):
-        fila = perc[perc["Variable"] == var]
-        return float(fila["I90 rel %"].iloc[0]) if not fila.empty else np.nan
-
-    r_ton, r_ley, r_metal = rel("Toneladas"), rel("Ley Cu %"), rel("Metal Cu t")
-
-    if np.isfinite(r_ton) and np.isfinite(r_ley):
-        if r_ton > r_ley * 1.5:
-            out.append(f"El tonelaje (I90 rel ≈ {r_ton:.0f}%) es bastante más "
-                       f"sensible a la interpretación que la ley media "
-                       f"(≈ {r_ley:.0f}%): el contorno del polígono controla "
-                       f"el volumen reportado.")
-        elif r_ley > r_ton * 1.5:
-            out.append(f"La ley media (I90 rel ≈ {r_ley:.0f}%) varía más que "
-                       f"el tonelaje (≈ {r_ton:.0f}%): los escenarios "
-                       f"incluyen/excluyen zonas de ley muy distinta.")
-        else:
-            out.append(f"Tonelaje y ley muestran sensibilidad comparable a la "
-                       f"interpretación (I90 rel ≈ {r_ton:.0f}% y "
-                       f"{r_ley:.0f}%).")
-    if np.isfinite(r_metal):
-        out.append(f"El metal contenido tiene un I90 relativo ≈ {r_metal:.0f}%: "
-                   f"combina el efecto de tonelaje y ley.")
-
-    t = totals.dropna(subset=["Metal Cu (t)"])
-    if len(t) >= 2:
-        opt = t.loc[t["Metal Cu (t)"].idxmax(), "Escenario"]
-        con = t.loc[t["Metal Cu (t)"].idxmin(), "Escenario"]
-        out.append(f"Escenario más optimista en metal: {opt}; "
-                   f"más conservador: {con}.")
-    if len(totals) < meta:
-        out.append(f"Lleva {len(totals)} de {meta} escenarios: dibuje más "
-                   f"interpretaciones plausibles antes de concluir.")
-    return out

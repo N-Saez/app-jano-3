@@ -16,7 +16,8 @@ DEFAULTS = {
     "seed": 12345,        # semilla aleatoria
     "spacing": 85.0,      # espaciamiento nominal de sondajes (70-100 m)
     "jitter": 8.0,        # perturbación aleatoria (5-10 m)
-    "cutoff": 0.30,       # cutoff mineral (% Cu)
+    "cutoff": 0.30,       # cutoff visual mineral/estéril en sondajes (% Cu)
+    "ley_corte": 0.20,    # ley de corte para reportes y comparaciones (%CuT)
     "espesor": 20.0,      # espesor constante (m)
     "densidad": 2.6,      # densidad (t/m³)
     "azimuth": 37.0,      # azimut del variograma / pista regional
@@ -46,10 +47,9 @@ def init_state():
     ss.active_scenario = None    # id del escenario activo (o None)
     ss.pending_active = None     # mueve el slider tras guardar/regenerar
     ss.pending_view = None       # navegación programática entre vistas
-    # Flujo guiado por etapas:
-    # interpretar (5 esc.) -> Siguiente -> estimar -> categorizar ->
+    # Flujo guiado por etapas (secuencial, se activa solo):
+    # interpretar 5 escenarios -> estimar -> categorizar ->
     # incertidumbre -> develar
-    ss.stage_est_unlocked = False   # Estimación liberada con «Siguiente»
     ss.categorized = False          # Categorización ya ejecutada
     ss.canvas_version = 0        # se incrementa para limpiar el canvas
     ss.p_mineral = None          # probabilidad de mineralización

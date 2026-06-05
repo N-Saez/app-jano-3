@@ -18,3 +18,5 @@ scipy>=1.10
 shapely>=2.0
 matplotlib>=3.7
 Pillow>=9.0
+openpyxl>=3.1
+

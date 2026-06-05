@@ -123,14 +123,14 @@ tot = rep[rep["Categoría"] == "Total recurso"].iloc[0]
 print(f"[5] Reporte Esc 1: {tot['Toneladas']:,.0f} t @ "
       f"{tot['Ley media Cu%']:.3f}% Cu = {tot['Metal Cu (t)']:,.0f} t Cu")
 
-totals = reporting.report_total_by_scenario(
-    scenarios, case["dist"], 50, 100, 150, 20.0, 20.0, 2.6)
+totals = reporting.report_total_by_scenario(scenarios, 20.0, 20.0, 2.6,
+                                            cutoff_grade=0.2)
 assert len(totals) == 3
+assert list(totals.columns) == ["Escenario", "Ton (Mt)",
+                                "Ley media Cu%", "Metal Cu (kt)"]
 perc = reporting.scenario_percentiles(totals)
-print(f"[6] Percentiles entre escenarios:\n"
+print(f"[6] Percentiles entre escenarios (corte 0.2% CuT):\n"
       f"{perc.round(2).to_string(index=False)}")
-for c in reporting.auto_comments(perc, totals, meta=5):
-    print(f"    - {c}")
 
 # 6. Incertidumbre
 p = uncertainty.compute_p_mineral(scenarios, 2500)

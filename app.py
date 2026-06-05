@@ -9,12 +9,13 @@ Ejecución:
 
 Flujo guiado del estudiante (etapas que se liberan en orden):
   1. dibujar 5 escenarios -> botón «Siguiente»
-  2. estimar (kriging OK por dominios)  -> pasa a Resultados
-  3. categorizar (zonas Verde/Amarillo/Rojo en Resultados)
+  2. estimar (kriging OK por dominios)  -> despliega la estimación
+  3. categorizar -> despliega la categorización (Verde/Amarillo/Rojo)
   4. p(mineral) y p(1-p) -> pasa a Incertidumbre
   5. develar realidad.
 """
 
+import io
 import json
 from pathlib import Path
 
@@ -29,28 +30,19 @@ import reporting
 import state
 import uncertainty
 from classification import classify_resources
-from estimation import estimate_scenario, get_scenario_weights_for_block
+from estimation import estimate_scenario
 
 # ------------------------------------------------------------------
-# Shim de compatibilidad: streamlit-drawable-canvas 0.9.3 llama a
-# st_image.image_to_url(image, width_int, ...) pero Streamlit >= 1.44
-# cambió el segundo parámetro de int a un objeto layout_config con
-# atributo .width. El shim envuelve la función nueva para aceptar ambas.
+# Shim de compatibilidad: streamlit-drawable-canvas 0.9.3 usa
+# st_image.image_to_url, que Streamlit >= 1.41 movió a
+# streamlit.elements.lib.image_utils (misma firma posicional).
 # ------------------------------------------------------------------
 try:
-    from types import SimpleNamespace
-    from streamlit.elements.lib import image_utils as _iu
-
-    _orig_image_to_url = _iu.image_to_url
-
-    def _patched_image_to_url(image, width_or_config, *args, **kwargs):
-        if isinstance(width_or_config, int):
-            width_or_config = SimpleNamespace(width=width_or_config)
-        return _orig_image_to_url(image, width_or_config, *args, **kwargs)
-
-    _iu.image_to_url = _patched_image_to_url
     import streamlit.elements.image as _st_image
-    _st_image.image_to_url = _patched_image_to_url
+    if not hasattr(_st_image, "image_to_url"):
+        from streamlit.elements.lib.image_utils import image_to_url \
+            as _image_to_url
+        _st_image.image_to_url = _image_to_url
 except Exception:
     pass
 
@@ -99,7 +91,8 @@ ss = st.session_state
 D = state.DEFAULTS
 
 # Supuestos FIJOS del caso (sin controles en la interfaz)
-cutoff = D["cutoff"]        # 0.30 %Cu
+cutoff = D["cutoff"]        # 0.30 %Cu (clase visual de sondajes)
+ley_corte = D["ley_corte"]  # 0.20 %CuT (reportes y comparaciones)
 espesor = D["espesor"]      # 20 m
 densidad = D["densidad"]    # 2.6 t/m³
 ton_b = reporting.block_tonnage(ss.case["block_size"], espesor, densidad)
@@ -115,13 +108,9 @@ FIXED_VARIOGRAM = {"azimuth": D["azimuth"], "r_major": D["r_major"],
                    "sill": D["sill"], "model": D["vmodel"]}
 
 
-def cb_siguiente():
-    """Etapa 1 -> 2: libera la sección de Estimación."""
-    ss.stage_est_unlocked = True
-
-
 def cb_estimar():
-    """Estima TODOS los escenarios por dominios y pasa a Resultados."""
+    """Estima TODOS los escenarios por dominios y despliega la
+    estimación en el mapa."""
     if not ss.scenarios:
         return
     c = ss.case
@@ -130,17 +119,21 @@ def cb_estimar():
             "Kriging ordinario", c["samples"], c["blocks"],
             sc["mask"], sc["sample_mask"], FIXED_VARIOGRAM)
         sc["estimated"] = True
-    ss.pending_view = "📋 Resultados"
+    # Desplegar la estimación recién calculada en el mapa
+    ss.pending_view = "🗺️ Mapa"
+    ss.layer_opt = "Ley estimada"
 
 
 def cb_categorizar():
-    """Marca la categorización, libera Incertidumbre, va a Resultados."""
+    """Marca la categorización, libera Incertidumbre y despliega la
+    categorización en el mapa."""
     if not any(sc.get("est_result") for sc in ss.scenarios):
         return
     for sc in ss.scenarios:
         sc["classified"] = True
     ss.categorized = True
-    ss.pending_view = "📋 Resultados"
+    ss.pending_view = "🗺️ Mapa"
+    ss.layer_opt = "Categorías de recurso"
 
 
 def cb_gen_p():
@@ -169,8 +162,7 @@ def cb_demo():
     ss.pending_active = 1
     ss.p_mineral = None
     ss.categorized = False
-    ss.stage_est_unlocked = False
-    ss.pending_view = "✏️ Dibujo"
+    ss.pending_view = "🔍 Interpretar"
 
 
 # ==================================================================
@@ -187,10 +179,12 @@ with st.sidebar:
 
     # ---------- Controles del mapa ----------
     with st.expander("🗺️ Controles del mapa", expanded=False):
+        # key=layer_opt permite que los callbacks (estimar/categorizar)
+        # cambien la capa mostrada programáticamente
         layer_opt = st.radio("Capa a mostrar en el mapa", [
             "Ninguna", "Ley estimada", "Categorías de recurso",
             "p(mineral)", "p(1-p)", "Distancia a sondajes"],
-            index=0)
+            index=0, key="layer_opt")
         show_labels = st.checkbox("Mostrar valores de ley (Cu%)", True)
         show_grid = st.checkbox("Mostrar grilla de bloques", False)
         show_saved = st.checkbox("Mostrar escenarios guardados", False)
@@ -226,10 +220,11 @@ with st.sidebar:
         st.caption(f"Los {meta} escenarios están completos "
                    f"(borre uno para reinterpretarlo).")
 
+    # Al guardar, el lienzo se limpia solo y queda listo para el
+    # siguiente escenario (el ícono de basurero del lienzo permite
+    # borrar un dibujo a medias sin guardar).
     guardar = st.button("💾 Guardar interpretación como escenario",
                         use_container_width=True, type="primary")
-    nuevo = st.button("➕ Nuevo escenario (limpiar lienzo)",
-                      use_container_width=True)
 
     # Escenario activo con flechas −/+ (antes / después). Tras guardar,
     # salta al recién creado vía pending_active (los widgets no toman
@@ -250,33 +245,34 @@ with st.sidebar:
         state.delete_scenario(ss.active_scenario)
         st.rerun()
 
-    # Al completar los 5 escenarios aparece «Siguiente» -> libera Etapa 2
-    if n_esc >= meta and not ss.stage_est_unlocked:
-        st.button("➡️ Siguiente: liberar Estimación",
-                  use_container_width=True, type="primary",
-                  key="btn_siguiente", on_click=cb_siguiente)
-
     # ---------- Etapa 2: Estimación (sólo el botón) ----------
+    # Se activa automáticamente al completar los 5 escenarios
     st.divider()
     st.markdown("#### Etapa 2 · Estimación")
     st.button("⚙️ Estimar leyes", use_container_width=True,
               type="primary", key="btn_estimar", on_click=cb_estimar,
-              disabled=(not ss.stage_est_unlocked or not ss.scenarios))
+              disabled=n_esc < meta)
     any_estimated = any(sc.get("est_result") for sc in ss.scenarios)
 
     # ---------- Etapa 3: Categorización ----------
     st.divider()
     st.markdown("#### Etapa 3 · Categorización")
-    with st.expander("Distancias de categorización (m)", expanded=False):
-        d_med = st.number_input("Distancia Medido (m)", 10.0, 500.0,
-                                D["d_med"], 10.0,
-                                disabled=not any_estimated)
-        d_ind = st.number_input("Distancia Indicado (m)", 10.0, 500.0,
-                                D["d_ind"], 10.0,
-                                disabled=not any_estimated)
-        d_inf = st.number_input("Distancia Inferido (m)", 10.0, 500.0,
-                                D["d_inf"], 10.0,
-                                disabled=not any_estimated)
+    # Distancias siempre visibles (sin colapsar)
+    d_med = st.number_input("Distancia Medido (m)", 10.0, 500.0,
+                            D["d_med"], 10.0,
+                            disabled=not any_estimated)
+    d_ind = st.number_input("Distancia Indicado (m)", 10.0, 500.0,
+                            D["d_ind"], 10.0,
+                            disabled=not any_estimated)
+    d_inf = st.number_input("Distancia Inferido (m)", 10.0, 500.0,
+                            D["d_inf"], 10.0,
+                            disabled=not any_estimated)
+    # Ámbito: categorizar sólo dentro de los polígonos interpretados,
+    # o todo el dominio (para comparar con la incertidumbre)
+    cat_scope = st.radio("Ámbito de categorización",
+                         ["Solo polígonos de mineral", "Todo el dominio"],
+                         horizontal=False, key="cat_scope",
+                         disabled=not any_estimated)
     st.button("🏷️ Categorizar recursos",
               use_container_width=True, type="primary",
               key="btn_categorizar", on_click=cb_categorizar,
@@ -291,23 +287,19 @@ with st.sidebar:
               disabled=not ss.categorized)
 
     # ---------- Etapa final: Realidad oculta ----------
+    # El flujo es secuencial: el botón se activa sólo al terminar la
+    # Etapa 4, por lo que el checkbox de confirmación era redundante.
     st.divider()
     st.markdown("#### Etapa final · Realidad oculta")
     st.warning("⚠️ Use esta opción **sólo al final** del ejercicio.")
-    confirmo = st.checkbox(f"Confirmo que terminé la actividad "
-                           f"({D['meta_escenarios']} escenarios)",
-                           disabled=ss.p_mineral is None)
     if st.button("🔓 Develar realidad", use_container_width=True,
-                 disabled=not confirmo):
+                 type="primary", disabled=ss.p_mineral is None):
         ss.revealed = True
     if ss.revealed:
         st.success("La realidad está develada (sección «Realidad»).")
 
-    # ---------- Modo profesor ----------
-    # TEMPORAL: visible siempre mientras se prueba la app.
-    # Para volver a ocultarlo (sólo con ?profesor=1 en la URL), usar:
-    #   if st.query_params.get("profesor") in ("1", "true"):
-    if True:
+    # ---------- Modo profesor (oculto: requiere ?profesor=1 en la URL) ----
+    if st.query_params.get("profesor") in ("1", "true"):
         with st.expander("🧑‍🏫 Modo profesor", expanded=False):
             st.caption("Sólo para probar la aplicación: genera 5 "
                        "interpretaciones automáticas (reemplaza las "
@@ -331,7 +323,13 @@ active_sc = state.get_scenario(ss.active_scenario)
 active_cat = None
 active_est = None   # estimación PROPIA del escenario activo
 if active_sc is not None:
-    active_cat = classify_resources(case["dist"], active_sc["mask"],
+    # Ámbito de categorización: dentro de la interpretación o todo el
+    # dominio (controlado en Etapa 3)
+    if cat_scope == "Todo el dominio":
+        scope_mask = np.ones(n_blocks, dtype=bool)
+    else:
+        scope_mask = active_sc["mask"]
+    active_cat = classify_resources(case["dist"], scope_mask,
                                     d_med, d_ind, d_inf)
     active_est = active_sc.get("est_result")
 
@@ -344,10 +342,16 @@ layer = LAYER_MAP[layer_opt]
 # ==================================================================
 # PANEL CENTRAL: VISTAS NAVEGABLES
 # (radio horizontal en vez de st.tabs para poder navegar
-#  programáticamente: estimar -> Resultados, p(mineral) -> Incertidumbre)
+#  programáticamente: estimar/categorizar -> Mapa, p -> Incertidumbre)
 # ==================================================================
-VIEWS = ["✏️ Dibujo", "🗺️ Mapa", "📋 Resultados", "📊 Comparación",
-         "🎲 Incertidumbre", "🔓 Realidad", "💾 Exportar"]
+# Encabezado institucional del curso
+st.markdown("## Magíster en Gestión Minera — Módulo: Geología y Recursos")
+st.caption("Prof. Tatiana Ordenes · Prof. Alejandro Cáceres — "
+           "Departamento de Ingeniería en Minas, USACH")
+
+VIEWS = ["📖 Instrucciones", "🔍 Interpretar", "🗺️ Mapa",
+         "📊 Comparación", "🎲 Incertidumbre", "🔓 Realidad",
+         "💾 Exportar"]
 if "view" not in ss:
     ss.view = VIEWS[0]
 if ss.get("pending_view"):
@@ -359,9 +363,97 @@ st.divider()
 
 
 # ------------------------------------------------------------------
-# VISTA 1: dibujo de interpretaciones
+# VISTA 0: instrucciones de uso (vista inicial)
 # ------------------------------------------------------------------
-if view == "✏️ Dibujo":
+if view == "📖 Instrucciones":
+    st.markdown("## 📖 Instrucciones de la actividad")
+    st.markdown(
+        "Se dispone de una campaña de sondajes sobre un sistema "
+        "mineralizado de cobre tipo **veta / lente** en un dominio de "
+        "**1000 × 1000 m** (planta). Cada punto es la intersección de un "
+        "sondaje con la planta y entrega su ley de **Cu%**: "
+        "🔴 mineralizado (≥ 0.30%) · 🔵 estéril / baja ley. La geología "
+        "verdadera está **oculta** hasta el final.\n\n"
+        "**Pista regional:** el sistema presenta una orientación "
+        "dominante cercana a **37°**.\n\n"
+        "El panel izquierdo guía el ejercicio por **etapas que se "
+        "activan en orden**. Las vistas de arriba muestran los "
+        "resultados de cada etapa.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"""
+#### Etapa 1 · Interpretación (vista 🔍 Interpretar)
+- Observe los sondajes y sus leyes (vista 🗺️ Mapa para ver con ejes,
+  grilla y tabla de sondajes).
+- **Interprete** la envolvente mineralizada en el lienzo: clic para
+  agregar vértices, **clic derecho para cerrar** el polígono. Puede
+  interpretar **más de un polígono** por escenario.
+- Presione **💾 Guardar interpretación como escenario**: el lienzo se
+  limpia y queda listo para el siguiente. El basurero del lienzo borra
+  un dibujo a medias.
+- Repita hasta completar **5 escenarios distintos y plausibles**
+  (no existe una única interpretación correcta).
+- Las flechas **−/+ de «Escenario activo»** seleccionan qué escenario
+  se muestra en las vistas; **🗑️ Borrar** libera un slot para
+  reinterpretarlo.
+
+#### Etapa 2 · Estimación
+- Se activa al completar los 5 escenarios.
+- **⚙️ Estimar leyes** ejecuta kriging ordinario con variograma fijo
+  (esférico, azimut 37°, alcances 90/45 m, sin efecto pepita) **por
+  dominios**: los bloques dentro de su interpretación se estiman sólo
+  con los sondajes interiores, y los de afuera con el resto. Por eso
+  **cada escenario tiene su propia estimación**.
+- Al estimar, el mapa despliega la ley estimada del escenario activo
+  (bloques de 20 × 20 m, escala Jet 0–1 %Cu).
+
+#### Etapa 3 · Categorización
+- Defina las distancias para **Medido / Indicado / Inferido**
+  (por defecto 50 / 100 / 150 m al sondaje más cercano) y el ámbito
+  (sólo polígonos o todo el dominio).
+- **🏷️ Categorizar recursos** despliega las zonas
+  🟢 Medido · 🟡 Indicado · 🔴 Inferido en el mapa.
+""")
+    with c2:
+        st.markdown(f"""
+#### Etapa 4 · Incertidumbre de escenarios (vista 🎲)
+- **🎲 Generar probabilidad de mineralización** calcula, por bloque,
+  `p = n° de escenarios que lo incluyen / 5`.
+- Verá 4 mapas: probabilidad de ser mineral, zonas más inciertas
+  **p(1−p)** (máxima donde los escenarios discrepan), distancia al
+  sondaje y categorización; más una tabla por categoría con el % de
+  zona incierta (ley de corte {ley_corte:.1f}% CuT).
+- Discuta: ¿estar cerca de un sondaje garantiza baja incertidumbre
+  geológica?
+
+#### Vista 📊 Comparación
+- Tabla por escenario (**Ton en Mt, ley, metal en kt**, sobre ley de
+  corte {ley_corte:.1f}% CuT), percentiles **P5 / P50 / P95**, el
+  intervalo **I90 = P95 − P5** ilustrado, y boxplots con cada
+  escenario etiquetado.
+- Discuta: ¿qué variable es más sensible a la interpretación?
+
+#### Etapa final · 🔓 Realidad
+- **Sólo al terminar todo lo anterior**, presione «Develar realidad».
+- Compare su interpretación y su estimación contra la geología y las
+  leyes verdaderas (2×2), revise la tabla Ton/Ley/Metal estimado vs
+  real con sus diferencias porcentuales, y el mapa de acierto
+  **OO / OW / WO / WW** (mineral correcto / dilución / pérdida /
+  estéril correcto).
+
+#### Vista 💾 Exportar
+- Descargue sus resultados como **Excel** (resumen, categorías,
+  percentiles, polígonos y sondajes) para el informe.
+""")
+    st.info("➡️ Para comenzar, vaya a la vista **🔍 Interpretar** y "
+            "dibuje su primer escenario.")
+
+
+# ------------------------------------------------------------------
+# VISTA 1: interpretación (dibujo de polígonos)
+# ------------------------------------------------------------------
+if view == "🔍 Interpretar":
     # (1) Título de la etapa, arriba
     st.markdown("## 🧭 Interpretación")
     st.markdown(
@@ -444,10 +536,6 @@ if view == "✏️ Dibujo":
             ss.canvas_version += 1    # limpiar lienzo para el siguiente
             st.rerun()
 
-    if nuevo:
-        ss.canvas_version += 1
-        st.rerun()
-
     # ---- Tabla de escenarios guardados (centrada, simplificada) ----
     if ss.scenarios:
         cu_v = samples["Cu_pct"].to_numpy()
@@ -499,116 +587,10 @@ if view == "🗺️ Mapa":
         tabla_s = samples.copy()
         tabla_s["clase"] = np.where(tabla_s["Cu_pct"] >= cutoff,
                                     "mineralizado", "estéril")
+        tabla_s = tabla_s.rename(columns={"X": "Este (m)",
+                                          "Y": "Norte (m)"})
         st.dataframe(tabla_s.round(3), hide_index=True,
                      use_container_width=True)
-
-
-# ------------------------------------------------------------------
-# VISTA 3: resultados del escenario activo + pesos de kriging
-# ------------------------------------------------------------------
-if view == "📋 Resultados":
-    if active_sc is None:
-        st.info("Guarde un escenario para ver sus resultados.")
-    elif active_est is None:
-        st.info("Presione «⚙️ Estimar leyes» en el panel izquierdo "
-                "(la estimación es propia de cada escenario).")
-    else:
-        est = active_est
-        mask = active_sc["mask"]
-        st.subheader(f"Reporte de recursos — {active_sc['name']}")
-        n_in = int(active_sc["sample_mask"].sum())
-        n_out = len(samples) - n_in
-        st.caption(f"Estimación por dominios de este escenario: bloques "
-                   f"dentro de la interpretación estimados con las "
-                   f"**{n_in}** muestras interiores; bloques de afuera con "
-                   f"las **{n_out}** restantes ({est['method']}).")
-        if np.isnan(est["est"][mask]).any():
-            st.warning("Hay bloques interiores sin estimar (la "
-                       "interpretación no encierra sondajes suficientes).")
-        rep = reporting.report_resources_by_category(
-            active_sc["name"], mask, active_cat, est["est"],
-            case["block_size"], espesor, densidad)
-        # Actualizar los campos de resultados del escenario (sección 4)
-        tot = rep[rep["Categoría"] == "Total recurso"].iloc[0]
-        active_sc.update(toneladas=float(tot["Toneladas"]),
-                         ley_media=(None if pd.isna(tot["Ley media Cu%"])
-                                    else float(tot["Ley media Cu%"])),
-                         metal_contenido=float(tot["Metal Cu (t)"]),
-                         resource_table=rep)
-        st.dataframe(
-            rep.style.format({"Área m²": "{:,.0f}", "Toneladas": "{:,.0f}",
-                              "Ley media Cu%": "{:.3f}",
-                              "Metal Cu (t)": "{:,.0f}",
-                              "Ley mín": "{:.3f}", "Ley máx": "{:.3f}"}),
-            hide_index=True, use_container_width=True)
-        st.caption(f"Supuestos: bloque {case['block_size']:.0f} m, espesor "
-                   f"{espesor:.0f} m, densidad {densidad} t/m³ → "
-                   f"{ton_b:,.0f} t/bloque. El reporte sólo cuenta los "
-                   f"bloques dentro de la interpretación mineralizada.")
-
-        # Zonas de categorización semi-transparentes (tras Categorizar)
-        if ss.categorized and active_cat is not None:
-            st.subheader("Zonas de categorización")
-            st.pyplot(plotting.make_main_map(
-                case, cutoff, cat_overlay=active_cat,
-                scenario_polys=active_sc["polygons"],
-                show_labels=False, point_size=20,
-                title=("Medido (verde) / Indicado (amarillo) / "
-                       "Inferido (rojo)"),
-                figsize=(6.8, 5.8)), use_container_width=False)
-            st.caption("También puede sobreponerlas en cualquier mapa con "
-                       "el control «Mostrar zonas Medido/Indicado/"
-                       "Inferido» del panel izquierdo.")
-
-        # Zona de incertidumbre geológica (tras computar p(mineral))
-        if p1p is not None:
-            st.subheader("Zona de incertidumbre geológica")
-            st.pyplot(plotting.make_main_map(
-                case, cutoff, layer="p1p", p1p=p1p, show_labels=False,
-                point_size=20,
-                title="p(1-p) — máxima donde los escenarios discrepan",
-                figsize=(6.8, 5.8)), use_container_width=False)
-
-    # ---- Inspector de pesos de kriging (del escenario activo) ----
-    # Los controles viven aquí (no en el panel de etapas) para que la
-    # Etapa 2 tenga sólo el botón de estimar.
-    if active_est is not None:
-        st.divider()
-        show_weights = st.checkbox("🔍 Mostrar pesos de kriging", False)
-    else:
-        show_weights = False
-    if show_weights:
-        cxy = st.columns([1, 1, 2])
-        wx = cxy[0].number_input("X del bloque (m)", 10.0, 990.0,
-                                 510.0, 20.0)
-        wy = cxy[1].number_input("Y del bloque (m)", 10.0, 990.0,
-                                 510.0, 20.0)
-        st.subheader("🔍 Pesos de kriging del bloque seleccionado")
-        # Bloque más cercano a las coordenadas pedidas
-        bid = int(np.argmin((blocks["x"] - wx) ** 2 + (blocks["y"] - wy) ** 2))
-        info = get_scenario_weights_for_block(bid, samples, blocks,
-                                              active_est)
-        if info is None or info["samples_used"].empty:
-            st.warning("Ese bloque pertenece a un dominio sin muestras: "
-                       "no hay pesos que mostrar.")
-        else:
-            c1, c2 = st.columns([3, 2])
-            with c1:
-                st.pyplot(plotting.make_kriging_weights_map(case, cutoff,
-                                                            info),
-                          use_container_width=False)
-            with c2:
-                st.markdown(
-                    f"**Bloque** ({info['x']:.0f}, {info['y']:.0f}) — "
-                    f"dominio **{info['domain']}** de "
-                    f"{active_sc['name']} — ley estimada "
-                    f"**{info['estimated_grade']:.3f} %Cu**")
-                st.dataframe(info["samples_used"].head(15), hide_index=True,
-                             use_container_width=True)
-                st.caption("Sólo participan las muestras del MISMO dominio "
-                           "que el bloque (frontera dura): la "
-                           "interpretación controla qué datos se usan, "
-                           "además de qué bloques se reportan.")
 
 
 # ------------------------------------------------------------------
@@ -626,35 +608,34 @@ if view == "📊 Comparación":
             st.warning(f"{len(ss.scenarios) - len(estimados)} escenario(s) "
                        f"aún sin estimar: presione «Estimar leyes» para "
                        f"incluirlos.")
+        # Todo se computa sobre la ley de corte (0.2% CuT).
+        # Unidades: tonelaje en Mt, metal en kt.
         totals = reporting.report_total_by_scenario(
-            estimados, case["dist"], d_med, d_ind, d_inf,
-            case["block_size"], espesor, densidad)
-        st.subheader("Resumen por escenario (cada uno con su estimación)")
+            estimados, case["block_size"], espesor, densidad,
+            cutoff_grade=ley_corte)
+        st.subheader(f"Resumen por escenario — ley de corte "
+                     f"{ley_corte:.1f}% CuT")
         st.dataframe(
-            totals.style.format({"Área m²": "{:,.0f}",
-                                 "Toneladas": "{:,.0f}",
+            totals.style.format({"Ton (Mt)": "{:.2f}",
                                  "Ley media Cu%": "{:.3f}",
-                                 "Metal Cu (t)": "{:,.0f}",
-                                 "% Medido": "{:.1f}", "% Indicado": "{:.1f}",
-                                 "% Inferido": "{:.1f}",
-                                 "% No clasificado": "{:.1f}"}),
+                                 "Metal Cu (kt)": "{:.2f}"}),
             hide_index=True, use_container_width=True)
 
         perc = reporting.scenario_percentiles(totals)
         st.subheader("Estadísticas entre escenarios (P5 / P50 / P95 / I90)")
         st.dataframe(
-            perc.style.format({"P5": "{:,.1f}", "P50": "{:,.1f}",
-                               "P95": "{:,.1f}", "I90 abs": "{:,.1f}",
+            perc.style.format({"P5": "{:,.2f}", "P50": "{:,.2f}",
+                               "P95": "{:,.2f}", "I90 abs": "{:,.2f}",
                                "I90 rel %": "{:.1f}"}),
             hide_index=True, use_container_width=True)
 
-        st.pyplot(plotting.make_scenario_stripplots(totals),
+        # «Foto» del I90: percentiles e intervalo sobre los escenarios
+        st.pyplot(plotting.make_i90_figure(totals),
                   use_container_width=False)
 
-        st.subheader("💬 Comentarios automáticos")
-        for c in reporting.auto_comments(perc, totals,
-                                         meta=D["meta_escenarios"]):
-            st.markdown(f"- {c}")
+        # Boxplots con la etiqueta de cada escenario
+        st.pyplot(plotting.make_scenario_stripplots(totals),
+                  use_container_width=False)
 
 
 # ------------------------------------------------------------------
@@ -668,26 +649,63 @@ if view == "🎲 Incertidumbre":
         n_used = len(ss.scenarios)
         st.markdown(f"Probabilidad calculada con **{n_used} escenario(s)**: "
                     f"`p = n° escenarios que incluyen el bloque / {n_used}`")
+        FS = (6.2, 5.5)   # mismo tamaño para los 4 mapas
+
+        # ----- Layout 2x2 -----
         c1, c2 = st.columns(2)
         with c1:
+            # Superior izquierda: probabilidad de ser mineral
             st.pyplot(plotting.make_main_map(
                 case, cutoff, layer="p", p=p, show_labels=False,
-                point_size=18, title="p(mineral)",
-                figsize=(6.4, 5.6)), use_container_width=False)
+                point_size=16, title="Probabilidad de ser mineral",
+                figsize=FS), use_container_width=False)
         with c2:
+            # Superior derecha: zonas más inciertas p(1-p), escala Jet
             st.pyplot(plotting.make_main_map(
                 case, cutoff, layer="p1p", p1p=p1p, show_labels=False,
-                point_size=18, title="Incertidumbre geológica p(1-p)",
-                figsize=(6.4, 5.6)), use_container_width=False)
+                point_size=16, title="Zonas más inciertas — p(1-p)",
+                figsize=FS), use_container_width=False)
 
-        st.subheader("Comparación: distancia a sondajes vs p(1-p)")
-        st.pyplot(plotting.make_dist_vs_p1p(case, p1p),
-                  use_container_width=True)
-        st.markdown(
-            "> **Discusión:** una zona cercana a sondajes puede tener "
-            "alta incertidumbre geológica si la continuidad del cuerpo es "
-            "ambigua; una zona lejana puede ser poco incierta si todos los "
-            "escenarios coinciden en su interpretación.")
+        c3, c4 = st.columns(2)
+        with c3:
+            # Inferior izquierda: distancia al sondaje más cercano
+            st.pyplot(plotting.make_main_map(
+                case, cutoff, layer="dist", show_labels=False,
+                point_size=16, title="Distancia al sondaje",
+                figsize=FS), use_container_width=False)
+        with c4:
+            # Inferior derecha: categorización vigente
+            if active_cat is not None and ss.categorized:
+                st.pyplot(plotting.make_main_map(
+                    case, cutoff, layer="categorias",
+                    categories=active_cat, show_labels=False,
+                    point_size=16,
+                    title=f"Categorización — {active_sc['name']}",
+                    figsize=FS), use_container_width=False)
+            else:
+                st.info("Categorice recursos (Etapa 3) para ver este "
+                        "panel.")
+
+        # ----- Tabla por categoría, supeditada a la ley de corte -----
+        if active_cat is not None and active_est is not None:
+            st.subheader(f"Incertidumbre por categoría — ley de corte "
+                         f"{ley_corte:.1f}% CuT")
+            tabla_u = uncertainty.category_uncertainty_table(
+                active_cat, case["dist"], p1p, active_est["est"],
+                cutoff_grade=ley_corte, p1p_threshold=0.1)
+            st.dataframe(
+                tabla_u.style.format({
+                    "Distancia promedio (m)": "{:.1f}",
+                    "% zona incierta (p(1-p) > 0.1)": "{:.1f}",
+                    "% zona cierta": "{:.1f}"}),
+                hide_index=True, use_container_width=True)
+            st.caption("Bloques con ley estimada ≥ ley de corte, "
+                       "categorización del escenario activo. Zona "
+                       "incierta: p(1-p) > 0.1 (los escenarios "
+                       "discrepan); zona cierta: p(1-p) ≤ 0.1.")
+        else:
+            st.info("Estime y categorice para ver la tabla de "
+                    "incertidumbre por categoría.")
 
 
 # ------------------------------------------------------------------
@@ -706,8 +724,8 @@ if view == "🔓 Realidad":
         nombre = active_sc["name"] if active_sc else "—"
         st.subheader(f"Comparación con la realidad — {nombre}")
         if active_sc is None:
-            st.info("Mueva el slider «Escenario activo» para elegir qué "
-                    "escenario comparar.")
+            st.info("Use las flechas de «Escenario activo» para elegir "
+                    "qué escenario comparar.")
         FS = (5.8, 5.2)   # mismo tamaño para las 4 vistas
 
         c1, c2 = st.columns(2)
@@ -748,37 +766,43 @@ if view == "🔓 Realidad":
                 point_size=18, title="Ley verdadera Cu%",
                 figsize=FS), use_container_width=False)
 
-        if ss.scenarios:
-            st.subheader("Acierto interpretativo por escenario")
-            comp = reporting.compare_with_truth(ss.scenarios,
-                                                case["truth_mask"],
-                                                case["block_size"])
-            fmt = {c: "{:,.0f}" for c in comp.columns if c.endswith("m²")}
-            fmt["IoU"] = "{:.3f}"
-            st.dataframe(comp.style.format(fmt), hide_index=True,
-                         use_container_width=True)
-            st.caption("IoU = intersección / unión (1 = interpretación "
-                       "perfecta). Falso positivo: interpretado como mineral "
-                       "pero estéril; falso negativo: mineral real omitido.")
+        # ----- Tabla escenario vs realidad (ley de corte 0.2% CuT) -----
+        estimados_r = [sc for sc in ss.scenarios if sc.get("est_result")]
+        if estimados_r:
+            st.subheader(f"Escenarios vs realidad — ley de corte "
+                         f"{ley_corte:.1f}% CuT")
+            dif = reporting.compare_tonnage_with_truth(
+                estimados_r, case["cu_true"], case["block_size"],
+                espesor, densidad, cutoff_grade=ley_corte)
+            st.dataframe(
+                dif.style.format({
+                    "Ton (Mt)": "{:.2f}", "Ley Cu%": "{:.3f}",
+                    "Metal Cu (t)": "{:,.0f}",
+                    "Ton real (Mt)": "{:.2f}", "Ley real Cu%": "{:.3f}",
+                    "Metal real (t)": "{:,.0f}",
+                    "Δ% Ton": "{:+.1f}", "Δ% Ley": "{:+.1f}",
+                    "Δ% Metal": "{:+.1f}"}),
+                hide_index=True, use_container_width=True)
+            st.caption("Estimado: bloques dentro de la interpretación con "
+                       "ley estimada ≥ corte. Real: bloques con ley "
+                       "verdadera ≥ corte. Δ% = 100·(estimado − real)/real.")
 
-            best = comp.loc[comp["IoU"].idxmax()]
-            st.success(f"El escenario más parecido a la realidad es "
-                       f"**{best['Escenario']}** (IoU = {best['IoU']:.3f}).")
-
+        # ----- Mapa de acierto OO / OW / WO / WW (escenario activo) -----
         if active_est is not None and active_sc is not None:
-            st.subheader(f"Error de estimación (estimado − verdadero) — "
-                         f"{active_sc['name']}")
-            err = active_est["est"] - case["cu_true"]
-            fig = plotting.make_main_map(
-                case, cutoff, show_labels=False, point_size=15,
-                title=(f"Error de estimación (Cu% est − Cu% real) — "
-                       f"{active_sc['name']}"),
-                figsize=(6.8, 5.8))
-            ax = fig.axes[0]
-            plotting.draw_layer(ax, err, case["nx"], case["ny"],
-                                case["block_size"], "RdBu_r", -0.6, 0.6,
-                                "Error Cu%")
-            st.pyplot(fig, use_container_width=False)
+            ore_est = (active_sc["mask"]
+                       & np.isfinite(active_est["est"])
+                       & (active_est["est"] >= ley_corte))
+            ore_real = case["cu_true"] >= ley_corte
+            cmm = st.columns([1, 4, 1])[1]
+            with cmm:
+                st.pyplot(plotting.make_confusion_map(
+                    case, ore_est, ore_real, ley_corte,
+                    scenario_name=active_sc["name"]),
+                    use_container_width=False)
+            st.caption("OO: mineral correcto · OW: dilución (estimado "
+                       "mineral, estéril real) · WO: pérdida (estimado "
+                       "estéril, mineral real) · WW: estéril correcto. "
+                       "Cambie el escenario activo para comparar otros.")
 
 
 # ------------------------------------------------------------------
@@ -789,7 +813,62 @@ if view == "💾 Exportar":
     if not ss.scenarios:
         st.info("No hay escenarios guardados que exportar.")
     else:
-        # --- Escenarios como JSON (sin arrays numpy) ---
+        # ----- Construir las hojas del libro Excel -----
+        hojas = {}   # nombre de hoja -> DataFrame
+
+        estimados_x = [sc for sc in ss.scenarios if sc.get("est_result")]
+        if estimados_x:
+            totals = reporting.report_total_by_scenario(
+                estimados_x, case["block_size"], espesor, densidad,
+                cutoff_grade=ley_corte)
+            hojas["Resumen escenarios"] = totals
+            # Cada escenario se reporta con SU PROPIA estimación
+            hojas["Por categoria"] = pd.concat([
+                reporting.report_resources_by_category(
+                    sc["name"], sc["mask"],
+                    classify_resources(case["dist"], sc["mask"],
+                                       d_med, d_ind, d_inf),
+                    sc["est_result"]["est"],
+                    case["block_size"], espesor, densidad,
+                    cutoff_grade=ley_corte)
+                for sc in estimados_x], ignore_index=True)
+            hojas["Percentiles I90"] = reporting.scenario_percentiles(totals)
+        else:
+            st.caption("Estime leyes para incluir las hojas de recursos "
+                       "en el Excel (por ahora exporta polígonos y "
+                       "sondajes).")
+
+        # Polígonos interpretados: una fila por vértice
+        filas = []
+        for sc in ss.scenarios:
+            for j, q in enumerate(sc["polygons"], start=1):
+                for k, (x, y) in enumerate(q["coords"], start=1):
+                    filas.append({"Escenario": sc["name"], "Polígono": j,
+                                  "Vértice": k, "X": round(x, 2),
+                                  "Y": round(y, 2)})
+        hojas["Poligonos"] = pd.DataFrame(filas)
+
+        # Sondajes con su clase visual (coordenadas Este/Norte)
+        tabla_s = samples.copy().round(3)
+        tabla_s["clase"] = np.where(tabla_s["Cu_pct"] >= cutoff,
+                                    "mineralizado", "estéril")
+        hojas["Sondajes"] = tabla_s.rename(
+            columns={"X": "Este (m)", "Y": "Norte (m)"})
+
+        # ----- Generar el .xlsx en memoria y ofrecer descarga -----
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+            for nombre_h, df_h in hojas.items():
+                df_h.to_excel(xw, sheet_name=nombre_h[:31], index=False)
+        st.download_button(
+            "📥 Descargar resultados (Excel)", buf.getvalue(),
+            "resultados_interpretacion.xlsx",
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet",
+            type="primary")
+        st.caption("Hojas incluidas: " + ", ".join(hojas.keys()))
+
+        # Respaldo de las geometrías (por si se quieren recargar después)
         export = []
         for sc in ss.scenarios:
             export.append({
@@ -800,41 +879,7 @@ if view == "💾 Exportar":
                                          for x, y in q["coords"]]}
                              for q in sc["polygons"]],
                 "area_mineralizada_m2": sc["area_mineralizada"],
-                "toneladas": sc["toneladas"],
-                "ley_media": sc["ley_media"],
-                "metal_contenido": sc["metal_contenido"],
-                "estimated": sc["estimated"],
-                "classified": sc["classified"],
             })
-        st.download_button("📥 Escenarios (JSON)",
+        st.download_button("📥 Escenarios (JSON, respaldo)",
                            json.dumps(export, indent=2, ensure_ascii=False),
                            "escenarios.json", "application/json")
-
-        estimados_x = [sc for sc in ss.scenarios if sc.get("est_result")]
-        if estimados_x:
-            totals = reporting.report_total_by_scenario(
-                estimados_x, case["dist"], d_med, d_ind, d_inf,
-                case["block_size"], espesor, densidad)
-            st.download_button("📥 Recursos por escenario (CSV)",
-                               totals.to_csv(index=False).encode("utf-8-sig"),
-                               "recursos_por_escenario.csv", "text/csv")
-
-            # Cada escenario se reporta con SU PROPIA estimación
-            by_cat = pd.concat([
-                reporting.report_resources_by_category(
-                    sc["name"], sc["mask"],
-                    classify_resources(case["dist"], sc["mask"],
-                                       d_med, d_ind, d_inf),
-                    sc["est_result"]["est"],
-                    case["block_size"], espesor, densidad)
-                for sc in estimados_x], ignore_index=True)
-            st.download_button("📥 Recursos por categoría (CSV)",
-                               by_cat.to_csv(index=False).encode("utf-8-sig"),
-                               "recursos_por_categoria.csv", "text/csv")
-
-            perc = reporting.scenario_percentiles(totals)
-            st.download_button("📥 Resumen P5/P50/P95/I90 (CSV)",
-                               perc.to_csv(index=False).encode("utf-8-sig"),
-                               "resumen_percentiles.csv", "text/csv")
-        else:
-            st.caption("Estime leyes para habilitar los CSV de recursos.")

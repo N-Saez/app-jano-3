@@ -141,8 +141,8 @@ def _setup_ax(ax, domain, with_axes=True, title=None):
     ax.set_ylim(0, domain)
     ax.set_aspect("equal")
     if with_axes:
-        ax.set_xlabel("X (m)")
-        ax.set_ylabel("Y (m)")
+        ax.set_xlabel("Este (m)")
+        ax.set_ylabel("Norte (m)")
         if title:
             ax.set_title(title, fontsize=11)
     else:
@@ -200,7 +200,7 @@ def make_main_map(case, cutoff, layer=None, layer_name="", est=None,
     elif layer == "p" and p is not None:
         draw_layer(ax, p, nx, ny, cell, P_CMAP, 0.0, 1.0, "p(mineral)")
     elif layer == "p1p" and p1p is not None:
-        draw_layer(ax, p1p, nx, ny, cell, "inferno", 0.0, 0.25, "p(1-p)")
+        draw_layer(ax, p1p, nx, ny, cell, "jet", 0.0, 0.25, "p(1-p)")
     elif layer == "dist":
         draw_layer(ax, case["dist"], nx, ny, cell, "magma_r", 0.0, None,
                    "Distancia a sondaje (m)")
@@ -305,25 +305,96 @@ def make_kriging_weights_map(case, cutoff, info, top_n=12):
     return fig
 
 
+# Especificación de las 3 variables de comparación (columna, etiqueta)
+COMP_SPECS = [("Ton (Mt)", "Tonelaje (Mt)"),
+              ("Ley media Cu%", "Ley media Cu %"),
+              ("Metal Cu (kt)", "Metal Cu (kt)")]
+
+
+def _short_name(nombre):
+    """'Escenario 3' -> 'E3' (etiqueta compacta para los gráficos)."""
+    return nombre.replace("Escenario ", "E")
+
+
 def make_scenario_stripplots(totals):
-    """Stripplots de tonelaje, ley y metal por escenario (comparación)."""
-    fig, axes = plt.subplots(1, 3, figsize=(11, 3.6))
-    specs = [("Toneladas", "Toneladas"),
-             ("Ley media Cu%", "Ley media Cu %"),
-             ("Metal Cu (t)", "Metal Cu contenido (t)")]
-    for ax, (col, label) in zip(axes, specs):
-        vals = totals[col].dropna().to_numpy()
+    """Boxplots de tonelaje (Mt), ley y metal (kt) por escenario, con la
+    etiqueta de cada escenario junto a su punto."""
+    fig, axes = plt.subplots(1, 3, figsize=(11, 3.8))
+    nombres = totals["Escenario"].tolist()
+    for ax, (col, label) in zip(axes, COMP_SPECS):
+        sel = totals[col].notna()
+        vals = totals.loc[sel, col].to_numpy()
+        nms = [n for n, s in zip(nombres, sel) if s]
         if len(vals) == 0:
             ax.set_axis_off()
             continue
-        # caja + puntos individuales (un punto por escenario)
+        # caja + puntos individuales (un punto por escenario, con label)
         ax.boxplot(vals, vert=True, widths=0.45, showfliers=False)
-        jitter = np.random.default_rng(0).uniform(-0.08, 0.08, len(vals))
+        jitter = np.random.default_rng(0).uniform(-0.10, 0.02, len(vals))
         ax.scatter(1 + jitter, vals, color="#d62728", zorder=5, s=30)
+        for x, v, nm in zip(1 + jitter, vals, nms):
+            ax.annotate(_short_name(nm), (x, v),
+                        textcoords="offset points", xytext=(7, -3),
+                        fontsize=8, color="#37404A", zorder=6)
         ax.set_title(label, fontsize=10)
         ax.set_xticks([])
         ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
+    return fig
+
+
+def make_i90_figure(totals):
+    """«Foto» del I90: para cada variable muestra los escenarios sobre un
+    eje, los percentiles P5 / P50 / P95 y el intervalo I90 sombreado."""
+    fig, axes = plt.subplots(3, 1, figsize=(9.5, 7.0))
+    nombres = totals["Escenario"].tolist()
+    for ax, (col, label) in zip(axes, COMP_SPECS):
+        sel = totals[col].notna()
+        vals = totals.loc[sel, col].to_numpy()
+        nms = [n for n, s in zip(nombres, sel) if s]
+        if len(vals) == 0:
+            ax.set_axis_off()
+            continue
+        p5, p50, p95 = np.percentile(vals, [5, 50, 95])
+        i90 = p95 - p5
+        i90rel = 50.0 * i90 / p50 if p50 > 0 else np.nan
+
+        # Intervalo I90 sombreado + percentiles
+        ax.axvspan(p5, p95, color="#EE7700", alpha=0.15)
+        for v, etiqueta, color in [(p5, "P5", "#1f77b4"),
+                                   (p50, "P50", "#37404A"),
+                                   (p95, "P95", "#d62728")]:
+            ax.axvline(v, color=color, ls="--", lw=1.4)
+            ax.annotate(etiqueta, (v, 0.85), xycoords=("data",
+                        "axes fraction"), ha="center", fontsize=9,
+                        color=color, fontweight="bold")
+
+        # Escenarios como puntos con su etiqueta
+        ax.scatter(vals, np.zeros(len(vals)), s=55, color="#37404A",
+                   zorder=5)
+        for v, nm in zip(vals, nms):
+            ax.annotate(_short_name(nm), (v, 0.0),
+                        textcoords="offset points", xytext=(0, 10),
+                        ha="center", fontsize=8, zorder=6)
+
+        # Flecha del intervalo I90 con su valor
+        ax.annotate("", xy=(p95, -0.45), xytext=(p5, -0.45),
+                    arrowprops=dict(arrowstyle="<->", color="#EE7700",
+                                    lw=1.8))
+        ax.annotate(f"I90 = {i90:,.2f}  ({i90rel:.0f}% rel)",
+                    ((p5 + p95) / 2, -0.78), ha="center", fontsize=9,
+                    color="#EE7700", fontweight="bold")
+
+        ax.set_ylim(-1.0, 1.0)
+        ax.set_yticks([])
+        ax.set_title(label, fontsize=10, loc="left")
+        margen = max(i90, 1e-6) * 0.35
+        ax.set_xlim(min(vals.min(), p5) - margen,
+                    max(vals.max(), p95) + margen)
+        ax.grid(axis="x", alpha=0.3)
+    fig.suptitle("Intervalo I90 entre escenarios (P95 − P5)",
+                 fontsize=11, color="#37404A")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     return fig
 
 
@@ -347,6 +418,47 @@ def make_dist_vs_p1p(case, p1p):
     axes[2].set_ylabel("p(1-p)")
     axes[2].set_title("¿Lejos = incierto?  (cada punto es un bloque)")
     axes[2].grid(alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def make_confusion_map(case, ore_est, ore_real, cutoff_grade,
+                       scenario_name="", figsize=(7.4, 6.6)):
+    """Mapa de confusión mineral/estéril estimado vs real (OO/OW/WO/WW):
+
+        OO : estimado mineral  y  realmente mineral  (acierto, verde)
+        OW : estimado mineral  pero estéril real     (dilución, rojo)
+        WO : estimado estéril  pero mineral real     (pérdida, naranjo)
+        WW : estéril en ambos                        (acierto, gris claro)
+
+    ore_est / ore_real : máscaras booleanas por bloque (sobre la ley
+    de corte indicada).
+    """
+    nx, ny, cell = case["nx"], case["ny"], case["block_size"]
+    code = np.zeros(len(ore_est))            # WW = 0
+    code[ore_est & ore_real] = 1             # OO
+    code[ore_est & ~ore_real] = 2            # OW
+    code[~ore_est & ore_real] = 3            # WO
+    colores = {0: "#d8dde2", 1: "#2ca02c", 2: "#e02020", 3: "#EE7700"}
+    etiquetas = {0: "WW (estéril correcto)", 1: "OO (mineral correcto)",
+                 2: "OW (dilución: est. mineral, real estéril)",
+                 3: "WO (pérdida: est. estéril, real mineral)"}
+
+    fig, ax = plt.subplots(figsize=figsize)
+    cmap = ListedColormap([colores[k] for k in range(4)])
+    norm = BoundaryNorm(np.arange(-0.5, 4.5), cmap.N)
+    ax.pcolormesh(_edges(nx, cell), _edges(ny, cell),
+                  code.reshape(ny, nx), cmap=cmap, norm=norm,
+                  shading="flat")
+    handles = [Line2D([0], [0], marker="s", linestyle="",
+                      markerfacecolor=colores[k], markeredgecolor="k",
+                      markersize=10, label=etiquetas[k])
+               for k in (1, 2, 3, 0)]
+    ax.legend(handles=handles, loc="upper left", fontsize=8,
+              framealpha=0.95)
+    _setup_ax(ax, case["domain"], title=(
+        f"Acierto mineral/estéril — {scenario_name} "
+        f"(corte {cutoff_grade:.1f}% CuT)"))
     fig.tight_layout()
     return fig
 
