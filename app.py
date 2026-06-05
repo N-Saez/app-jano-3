@@ -33,16 +33,25 @@ from classification import classify_resources
 from estimation import estimate_scenario
 
 # ------------------------------------------------------------------
-# Shim de compatibilidad: streamlit-drawable-canvas 0.9.3 usa
-# st_image.image_to_url, que Streamlit >= 1.41 movió a
-# streamlit.elements.lib.image_utils (misma firma posicional).
+# Shim de compatibilidad: streamlit-drawable-canvas 0.9.3 llama a
+# st_image.image_to_url(image, width_int, ...) pero Streamlit >= 1.44
+# cambió el segundo parámetro de int a un objeto layout_config con
+# atributo .width. El shim envuelve la función nueva para aceptar ambas.
 # ------------------------------------------------------------------
 try:
+    from types import SimpleNamespace
+    from streamlit.elements.lib import image_utils as _iu
+
+    _orig_image_to_url = _iu.image_to_url
+
+    def _patched_image_to_url(image, width_or_config, *args, **kwargs):
+        if isinstance(width_or_config, int):
+            width_or_config = SimpleNamespace(width=width_or_config)
+        return _orig_image_to_url(image, width_or_config, *args, **kwargs)
+
+    _iu.image_to_url = _patched_image_to_url
     import streamlit.elements.image as _st_image
-    if not hasattr(_st_image, "image_to_url"):
-        from streamlit.elements.lib.image_utils import image_to_url \
-            as _image_to_url
-        _st_image.image_to_url = _image_to_url
+    _st_image.image_to_url = _patched_image_to_url
 except Exception:
     pass
 
