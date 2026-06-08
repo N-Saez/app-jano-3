@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apps GeoInnova</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+    header {
+      background: #1a1a2e;
+      color: white;
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header h1 { font-size: 1.25rem; font-weight: 600; }
+    header .user-info { font-size: 0.85rem; color: #aab4c8; }
+    .btn {
+      display: inline-block;
+      padding: 0.5rem 1.2rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      border: none;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .btn-primary { background: #0078d4; color: white; }
+    .btn-primary:hover { background: #006cbf; }
+    .btn-danger { background: #c0392b; color: white; }
+    .btn-danger:hover { background: #a93226; }
+    main { max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+    .section-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: #1a1a2e;
+    }
+    .apps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2.5rem;
+    }
+    .app-card {
+      background: white;
+      border-radius: 10px;
+      padding: 1.2rem 1.4rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      transition: box-shadow 0.2s;
+    }
+    .app-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+    .app-card .name { font-weight: 600; font-size: 1rem; }
+    .app-card .type-badge {
+      font-size: 0.72rem;
+      padding: 2px 8px;
+      border-radius: 20px;
+      display: inline-block;
+      width: fit-content;
+    }
+    .badge-streamlit { background: #ff4b4b22; color: #c0392b; }
+    .badge-dash      { background: #003dff22; color: #0044cc; }
+    .app-card .owner { font-size: 0.8rem; color: #888; }
+    .app-card a.open-btn {
+      margin-top: 0.4rem;
+      background: #f0f4ff;
+      color: #0044cc;
+      padding: 0.45rem 0;
+      text-align: center;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.88rem;
+      font-weight: 500;
+      transition: background 0.15s;
+    }
+    .app-card a.open-btn:hover { background: #dce6ff; }
+    .empty-state { color: #999; font-size: 0.95rem; padding: 1rem 0; }
+    /* Upload form */
+    .upload-card {
+      background: white;
+      border-radius: 10px;
+      padding: 1.5rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      max-width: 480px;
+    }
+    .upload-card h2 { font-size: 1rem; margin-bottom: 1rem; color: #1a1a2e; }
+    .form-group { margin-bottom: 1rem; }
+    .form-group label { display: block; font-size: 0.85rem; margin-bottom: 0.35rem; color: #444; }
+    .form-group input[type=text], .form-group input[type=file] {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      outline: none;
+    }
+    .form-group input[type=text]:focus { border-color: #0078d4; }
+    .form-hint { font-size: 0.77rem; color: #888; margin-top: 0.25rem; }
+    #upload-status { margin-top: 0.75rem; font-size: 0.88rem; }
+    /* Login */
+    .login-box {
+      background: white;
+      border-radius: 10px;
+      padding: 2.5rem 2rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      text-align: center;
+      max-width: 360px;
+      margin: 4rem auto;
+    }
+    .login-box h2 { font-size: 1.2rem; margin-bottom: 0.5rem; }
+    .login-box p { color: #666; font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .btn-microsoft {
+      background: #0078d4;
+      color: white;
+      padding: 0.65rem 1.5rem;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      border: none;
+      font-weight: 500;
+      width: 100%;
+    }
+    .btn-microsoft:hover { background: #006cbf; }
+    #login-error { color: #c0392b; font-size: 0.85rem; margin-top: 0.75rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🌍 Apps GeoInnova</h1>
+  {% if user %}
+  <div style="display:flex;align-items:center;gap:1rem;">
+    <span class="user-info">{{ user }}</span>
+    <a href="/logout" class="btn btn-danger" style="padding:0.35rem 0.9rem;font-size:0.82rem;">Salir</a>
+  </div>
+  {% endif %}
+</header>
+
+<main>
+
+{% if not user %}
+<!-- ── VISTA SIN LOGIN ── -->
+<div class="login-box">
+  <h2>Acceso al portal</h2>
+  <p>Inicia sesión con tu cuenta Microsoft corporativa para ver y gestionar las aplicaciones.</p>
+  <button class="btn-microsoft" onclick="loginMicrosoft()">
+    Iniciar sesión con Microsoft
+  </button>
+  <div id="login-error"></div>
+</div>
+
+{% else %}
+<!-- ── VISTA CON LOGIN ── -->
+
+<p class="section-title">Aplicaciones disponibles</p>
+
+{% if apps %}
+<div class="apps-grid">
+  {% for a in apps %}
+  <div class="app-card">
+    <span class="name">{{ a.name }}</span>
+    <span class="type-badge badge-{{ a.app_type }}">{{ a.app_type }}</span>
+    <span class="owner">{{ a.owner }}</span>
+    <a class="open-btn" href="/{{ a.name }}/" target="_blank">Abrir →</a>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No hay aplicaciones desplegadas aún.</p>
+{% endif %}
+
+{% if can_upload %}
+<p class="section-title">Desplegar nueva aplicación</p>
+<div class="upload-card">
+  <h2>Subir ZIP</h2>
+  <form id="upload-form">
+    <div class="form-group">
+      <label for="app_name">Nombre (slug)</label>
+      <input type="text" id="app_name" name="app_name"
+             placeholder="mi-app" pattern="[a-z0-9][a-z0-9\-]{1,30}" required>
+      <div class="form-hint">Solo minúsculas, números y guiones. Ej: <code>dilucion-v2</code></div>
+    </div>
+    <div class="form-group">
+      <label for="zip_file">Archivo ZIP</label>
+      <input type="file" id="zip_file" name="zip_file" accept=".zip" required>
+      <div class="form-hint">Debe contener <code>app.py</code> y <code>requirements.txt</code></div>
+    </div>
+    <button type="submit" class="btn btn-primary" style="width:100%;">Desplegar</button>
+    <div id="upload-status"></div>
+  </form>
+</div>
+{% endif %}
+
+{% endif %}
+</main>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+
+<script>
+  // ── Firebase config (reemplazar con los valores reales del proyecto Firebase) ──
+  const firebaseConfig = {
+    apiKey:            "REEMPLAZAR",
+    authDomain:        "REEMPLAZAR.firebaseapp.com",
+    projectId:         "REEMPLAZAR",
+    storageBucket:     "REEMPLAZAR.appspot.com",
+    messagingSenderId: "REEMPLAZAR",
+    appId:             "REEMPLAZAR"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth();
+
+  async function loginMicrosoft() {
+    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+    provider.setCustomParameters({ tenant: 'REEMPLAZAR_TENANT_ID' });
+
+    try {
+      const result = await auth.signInWithPopup(provider);
+      const idToken = await result.user.getIdToken();
+
+      const res = await fetch('/auth/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: idToken })
+      });
+
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        const data = await res.json();
+        document.getElementById('login-error').textContent =
+          'Error: ' + (data.detail || 'autenticación fallida');
+      }
+    } catch (err) {
+      document.getElementById('login-error').textContent = 'Error: ' + err.message;
+    }
+  }
+
+  // ── Upload form ──
+  const form = document.getElementById('upload-form');
+  if (form) {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const status = document.getElementById('upload-status');
+      const btn = form.querySelector('button[type=submit]');
+      btn.disabled = true;
+      status.textContent = '⏳ Desplegando... (puede tardar 1-2 minutos)';
+      status.style.color = '#555';
+
+      const fd = new FormData(form);
+      try {
+        const res = await fetch('/upload', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (res.ok) {
+          status.style.color = '#27ae60';
+          status.innerHTML = `✅ App desplegada: <a href="${data.url}" target="_blank">${data.url}</a>`;
+          setTimeout(() => window.location.reload(), 3000);
+        } else {
+          status.style.color = '#c0392b';
+          status.textContent = '❌ Error: ' + (data.detail || 'error desconocido');
+          btn.disabled = false;
+        }
+      } catch (err) {
+        status.style.color = '#c0392b';
+        status.textContent = '❌ Error de red: ' + err.message;
+        btn.disabled = false;
+      }
+    });
+  }
+</script>
+
+</body>
+</html>

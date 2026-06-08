@@ -1,0 +1,33 @@
+# /etc/systemd/system/streamlit-app@.service
+# Template unit para apps Streamlit. Instanciar con: systemctl start streamlit-app@<nombre>
+
+[Unit]
+Description=Streamlit App — %i
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=streamlit
+Group=streamlit
+
+WorkingDirectory=/opt/streamlit-platform/apps/%i
+EnvironmentFile=/opt/streamlit-platform/apps/%i/.env
+
+ExecStart=/opt/streamlit-platform/apps/%i/venv/bin/python \
+    -m streamlit run app.py \
+    --server.port=${PORT} \
+    --server.address=127.0.0.1 \
+    --server.baseUrlPath=/%i \
+    --server.headless=true \
+    --server.enableCORS=false \
+    --server.enableXsrfProtection=false
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=streamlit-%i
+
+[Install]
+WantedBy=multi-user.target

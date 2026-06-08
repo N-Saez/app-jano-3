@@ -1,0 +1,29 @@
+# /etc/systemd/system/streamlit-portal.service
+# Servicio del portal FastAPI
+
+[Unit]
+Description=Streamlit Platform Portal (FastAPI)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=streamlit
+Group=streamlit
+
+WorkingDirectory=/opt/streamlit-platform/portal
+EnvironmentFile=/opt/streamlit-platform/portal/.env
+
+ExecStart=/opt/streamlit-platform/portal/venv/bin/uvicorn main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 2
+
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=streamlit-portal
+
+[Install]
+WantedBy=multi-user.target

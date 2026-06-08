@@ -1,0 +1,24 @@
+# Template Nginx para apps Streamlit
+# Variables: {name}, {port}
+
+location /{name}/ {
+    proxy_pass         http://127.0.0.1:{port}/;
+    proxy_http_version 1.1;
+    proxy_set_header   Upgrade    $http_upgrade;
+    proxy_set_header   Connection "upgrade";
+    proxy_set_header   Host       $host;
+    proxy_set_header   X-Real-IP  $remote_addr;
+    proxy_set_header   X-Forwarded-Prefix /{name};
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 86400s;
+}
+
+location /{name}/_stcore/ {
+    proxy_pass         http://127.0.0.1:{port}/_stcore/;
+    proxy_http_version 1.1;
+    proxy_set_header   Upgrade    $http_upgrade;
+    proxy_set_header   Connection "upgrade";
+    proxy_set_header   Host       $host;
+    proxy_buffering    off;
+    proxy_cache        off;
+}

@@ -1,0 +1,26 @@
+# /etc/systemd/system/dash-app@.service
+# Template unit para apps Dash/Flask. Instanciar con: systemctl start dash-app@<nombre>
+
+[Unit]
+Description=Dash App — %i
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=streamlit
+Group=streamlit
+
+WorkingDirectory=/opt/streamlit-platform/apps/%i
+EnvironmentFile=/opt/streamlit-platform/apps/%i/.env
+
+ExecStart=/opt/streamlit-platform/apps/%i/venv/bin/python app.py
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dash-%i
+
+[Install]
+WantedBy=multi-user.target
