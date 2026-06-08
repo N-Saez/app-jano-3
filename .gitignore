@@ -1,0 +1,14 @@
+# Llaves y credenciales
+*.pem
+*.json
+!package.json
+!package-lock.json
+
+# Entornos
+.env
+venv/
+__pycache__/
+*.pyc
+
+# Claude
+.claude/

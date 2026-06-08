@@ -88,15 +88,18 @@ def _extract_zip(zip_bytes: bytes, dest: Path):
 
 
 def _patch_dash_app(app_py: Path, slug: str):
-    """Inyecta requests_pathname_prefix y lectura de PORT desde env en app.py."""
+    """Inyecta url_base_pathname y lectura de PORT desde env en app.py."""
     code = app_py.read_text()
 
-    if "requests_pathname_prefix" not in code:
+    # url_base_pathname works in Dash 4.x; requests_pathname_prefix is Dash 2/3
+    if "url_base_pathname" not in code and "requests_pathname_prefix" not in code:
         code = re.sub(
             r"(app\s*=\s*(?:dash\.)?Dash\s*\(\s*__name__)",
-            rf"\1, requests_pathname_prefix='/{slug}/'",
+            rf"\1, url_base_pathname='/{slug}/'",
             code,
         )
+    elif "requests_pathname_prefix" in code:
+        code = code.replace("requests_pathname_prefix=", "url_base_pathname=")
 
     if "import os" not in code:
         code = "import os\n" + code
@@ -120,7 +123,7 @@ def _nginx_fragment(name: str, port: int, app_type: str) -> str:
     if app_type == "streamlit":
         return f"""\
 location /{name}/ {{
-    proxy_pass         http://127.0.0.1:{port}/;
+    proxy_pass         http://127.0.0.1:{port};
     proxy_http_version 1.1;
     proxy_set_header   Upgrade    $http_upgrade;
     proxy_set_header   Connection "upgrade";
@@ -131,7 +134,7 @@ location /{name}/ {{
     proxy_send_timeout 86400s;
 }}
 location /{name}/_stcore/ {{
-    proxy_pass         http://127.0.0.1:{port}/_stcore/;
+    proxy_pass         http://127.0.0.1:{port};
     proxy_http_version 1.1;
     proxy_set_header   Upgrade    $http_upgrade;
     proxy_set_header   Connection "upgrade";
@@ -143,12 +146,16 @@ location /{name}/_stcore/ {{
     else:
         return f"""\
 location /{name}/ {{
-    proxy_pass         http://127.0.0.1:{port}/;
+    proxy_pass         http://127.0.0.1:{port};
+    proxy_http_version 1.1;
+    proxy_set_header   Upgrade    $http_upgrade;
+    proxy_set_header   Connection "upgrade";
     proxy_set_header   Host             $host;
     proxy_set_header   X-Real-IP        $remote_addr;
     proxy_set_header   X-Forwarded-For  $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $scheme;
-    proxy_read_timeout 60s;
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 86400s;
 }}
 """
 

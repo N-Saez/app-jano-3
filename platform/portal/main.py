@@ -96,7 +96,7 @@ async def upload_app(
 
     return {
         "status": "ok",
-        "url": f"https://pagina.cl/{app_name}/",
+        "url": f"https://geotools.cl/{app_name}/",
         "port": record.port,
         "type": record.app_type,
     }
