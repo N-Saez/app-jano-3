@@ -84,6 +84,20 @@
       transition: background 0.15s;
     }
     .app-card a.open-btn:hover { background: #dce6ff; }
+    .app-card .card-actions { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
+    .app-card .card-actions a.open-btn { flex: 1; margin-top: 0; }
+    .btn-delete {
+      background: #fff0f0;
+      color: #c0392b;
+      border: 1px solid #f5c6c6;
+      border-radius: 6px;
+      font-size: 0.88rem;
+      font-weight: 500;
+      padding: 0.45rem 0.75rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-delete:hover { background: #fde0e0; }
     .empty-state { color: #999; font-size: 0.95rem; padding: 1rem 0; }
     /* Upload form */
     .upload-card {
@@ -171,7 +185,12 @@
     <span class="name">{{ a.name }}</span>
     <span class="type-badge badge-{{ a.app_type }}">{{ a.app_type }}</span>
     <span class="owner">{{ a.owner }}</span>
-    <a class="open-btn" href="/{{ a.name }}/" target="_blank">Abrir →</a>
+    <div class="card-actions">
+      <a class="open-btn" href="/{{ a.name }}/" target="_blank">Abrir →</a>
+      {% if can_upload %}
+      <button class="btn-delete" onclick="deleteApp('{{ a.name }}')">🗑</button>
+      {% endif %}
+    </div>
   </div>
   {% endfor %}
 </div>
@@ -244,6 +263,22 @@
       }
     } catch (err) {
       document.getElementById('login-error').textContent = 'Error: ' + err.message;
+    }
+  }
+
+  // ── Delete app ──
+  async function deleteApp(name) {
+    if (!confirm(`¿Eliminar la app "${name}"? Esta acción no se puede deshacer.`)) return;
+    try {
+      const res = await fetch(`/app/${name}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        alert('Error: ' + (data.detail || 'no se pudo eliminar'));
+      }
+    } catch (err) {
+      alert('Error de red: ' + err.message);
     }
   }
 

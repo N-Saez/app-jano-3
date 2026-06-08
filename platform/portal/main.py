@@ -11,7 +11,7 @@ from auth import (
     verify_firebase_token,
 )
 from db import App, get_db, list_running_apps
-from deployer import deploy_zip
+from deployer import delete_app as _delete_app, deploy_zip
 from security import is_authorized_uploader, validate_slug, validate_zip
 
 app = FastAPI(docs_url=None, redoc_url=None)
@@ -100,6 +100,27 @@ async def upload_app(
         "port": record.port,
         "type": record.app_type,
     }
+
+# ── Eliminar app ─────────────────────────────────────────────────────────────
+
+@app.delete("/app/{app_name}")
+async def remove_app(app_name: str, request: Request, db=Depends(get_db)):
+    user = get_session_user(request)
+    if not user:
+        raise HTTPException(401, "No autenticado.")
+    if not is_authorized_uploader(user):
+        raise HTTPException(403, "No tienes permiso para eliminar aplicaciones.")
+
+    record = db.query(App).filter(App.name == app_name).first()
+    if not record:
+        raise HTTPException(404, "App no encontrada.")
+
+    try:
+        await _delete_app(app_name, record.app_type, db)
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+
+    return {"status": "deleted", "name": app_name}
 
 # ── Estado de una app ─────────────────────────────────────────────────────────
 

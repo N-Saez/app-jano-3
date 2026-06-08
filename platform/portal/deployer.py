@@ -160,6 +160,34 @@ location /{name}/ {{
 """
 
 
+async def delete_app(app_name: str, app_type: str, db) -> None:
+    from db import App
+    service = f"{app_type}-app@{app_name}"
+    for cmd in [
+        f"sudo systemctl stop {service}",
+        f"sudo systemctl disable {service}",
+    ]:
+        try:
+            await _run(cmd)
+        except RuntimeError:
+            pass
+
+    nginx_conf = NGINX_LOCS / f"{app_name}.conf"
+    if nginx_conf.exists():
+        nginx_conf.unlink()
+
+    app_dir = APPS_BASE / app_name
+    if app_dir.exists():
+        await _run(f"sudo rm -rf {app_dir}")
+
+    await _run(f"sudo {SCRIPTS / 'reload_nginx.sh'}")
+
+    record = db.query(App).filter(App.name == app_name).first()
+    if record:
+        db.delete(record)
+        db.commit()
+
+
 async def _run(cmd: str):
     proc = await asyncio.create_subprocess_shell(
         cmd,
