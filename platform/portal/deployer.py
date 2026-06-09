@@ -5,6 +5,8 @@ import re
 import zipfile
 from pathlib import Path
 
+import urllib.request
+
 from db import App, get_next_port
 
 APPS_BASE = Path("/opt/streamlit-platform/apps")
@@ -29,13 +31,12 @@ async def deploy_zip(app_name: str, zip_bytes: bytes, owner: str, db) -> App:
     if app_type == "dash":
         _patch_dash_app(app_dir / "app.py", app_name)
 
-    # 4. Crear venv e instalar dependencias
-    python = "python3.12" if app_type == "dash" else "python3.11"
+    # 4. Reutilizar venv compartido e instalar dependencias faltantes
     venv = app_dir / "venv"
-    await _run(f"{python} -m venv {venv}")
-    pip = venv / "bin" / "pip"
-    await _run(f"{pip} install --upgrade pip -q")
-    await _run(f"{pip} install -r {app_dir / 'requirements.txt'} -q")
+    shared = APPS_BASE / ("sims" if app_type == "streamlit" else "yacimientos-au") / "venv"
+    await _run(f"ln -sfn {shared} {venv}")
+    pip = shared / "bin" / "pip"
+    await _run(f"sudo {pip} install -r {app_dir / 'requirements.txt'} -q")
 
     # 5. Asignar puerto y registrar en DB
     port = get_next_port(db, PORT_START, PORT_END)
@@ -56,7 +57,10 @@ async def deploy_zip(app_name: str, zip_bytes: bytes, owner: str, db) -> App:
     await _run(f"sudo systemctl enable {service}")
     await _run(f"sudo systemctl start {service}")
 
-    # 9. Recargar Nginx
+    # 9. Esperar que la app esté realmente arriba (health check)
+    await _wait_for_app(port, app_name, app_type)
+
+    # 10. Recargar Nginx una vez que la app ya responde
     await _run(f"sudo {SCRIPTS / 'reload_nginx.sh'}")
 
     record.status = "running"
@@ -178,7 +182,7 @@ async def delete_app(app_name: str, app_type: str, db) -> None:
 
     app_dir = APPS_BASE / app_name
     if app_dir.exists():
-        await _run(f"sudo rm -rf {app_dir}")
+        await _run(f"sudo {SCRIPTS / 'delete_app.sh'} {app_name}")
 
     await _run(f"sudo {SCRIPTS / 'reload_nginx.sh'}")
 
@@ -186,6 +190,45 @@ async def delete_app(app_name: str, app_type: str, db) -> None:
     if record:
         db.delete(record)
         db.commit()
+
+
+async def _wait_for_app(port: int, app_name: str, app_type: str, timeout: int = 90):
+    """Espera que la app esté respondiendo y estable (no sólo que arrancó)."""
+    if app_type == "streamlit":
+        url = f"http://127.0.0.1:{port}/{app_name}/_stcore/health"
+    else:
+        url = f"http://127.0.0.1:{port}/{app_name}/"
+
+    # Fase 1: esperar primer OK
+    for _ in range(timeout):
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                if r.status < 500:
+                    break
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+    else:
+        raise RuntimeError(f"La app '{app_name}' no respondió en {timeout}s. Revisa los logs: journalctl -u {app_type}-app@{app_name} -n 50")
+
+    # Fase 2: verificar que sigue viva 5s después (detecta crashes al cargar módulos)
+    await asyncio.sleep(5)
+    service = f"{app_type}-app@{app_name}"
+    proc = await asyncio.create_subprocess_shell(
+        f"systemctl is-active {service}",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    out, _ = await proc.communicate()
+    if out.decode().strip() != "active":
+        # Capturar últimas líneas del log para el mensaje de error
+        log_proc = await asyncio.create_subprocess_shell(
+            f"journalctl -u {service} -n 20 --no-pager",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        log_out, _ = await log_proc.communicate()
+        raise RuntimeError(
+            f"La app '{app_name}' cayó tras arrancar. Últimos logs:\n{log_out.decode()[-1500:]}"
+        )
 
 
 async def _run(cmd: str):

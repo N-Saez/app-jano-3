@@ -19,7 +19,7 @@ platform/
 ```bash
 sudo apt update && sudo apt install -y \
   nginx certbot python3-certbot-nginx \
-  python3.11 python3.11-venv \
+  python3.14 python3.14-venv \
   python3.12 python3.12-venv \
   sqlite3
 
@@ -79,7 +79,7 @@ sudo cp -r platform/portal/. /opt/streamlit-platform/portal/
 sudo chown -R streamlit:streamlit /opt/streamlit-platform/portal
 
 # Crear venv e instalar dependencias
-sudo -u streamlit python3.11 -m venv /opt/streamlit-platform/portal/venv
+sudo -u streamlit python3.14 -m venv /opt/streamlit-platform/portal/venv
 sudo -u streamlit /opt/streamlit-platform/portal/venv/bin/pip install \
   -r /opt/streamlit-platform/portal/requirements.txt -q
 ```

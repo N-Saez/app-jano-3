@@ -298,9 +298,16 @@
         const res = await fetch('/upload', { method: 'POST', body: fd });
         const data = await res.json();
         if (res.ok) {
-          status.style.color = '#27ae60';
-          status.innerHTML = `✅ App desplegada: <a href="${data.url}" target="_blank">${data.url}</a>`;
-          setTimeout(() => window.location.reload(), 3000);
+          status.style.color = '#555';
+          status.textContent = '✅ Verificando app...';
+          // Forzar fetch sin caché para sobreescribir cualquier 404 guardado en el browser
+          fetch(data.url, { cache: 'reload' })
+            .catch(() => {})
+            .finally(() => {
+              status.style.color = '#27ae60';
+              status.innerHTML = `✅ App desplegada: <a href="${data.url}" target="_blank">${data.url}</a>`;
+            });
+          setTimeout(() => window.location.reload(), 4000);
         } else {
           status.style.color = '#c0392b';
           status.textContent = '❌ Error: ' + (data.detail || 'error desconocido');
